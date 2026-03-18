@@ -343,6 +343,35 @@
     .btn-secondary:hover { background: var(--bg-hover); }
 
     .btn-sm { padding: 5px 12px; font-size: 12px; }
+
+    /* ── Upcoming meeting ── */
+    .upcoming {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 20px;
+      background: rgba(10, 132, 255, 0.08);
+      border-bottom: 1px solid rgba(10, 132, 255, 0.15);
+    }
+
+    .upcoming-icon { font-size: 16px; flex-shrink: 0; }
+
+    .upcoming-info { flex: 1; min-width: 0; }
+
+    .upcoming-title {
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .upcoming-time {
+      font-size: 11px;
+      color: var(--accent);
+      font-weight: 500;
+    }
   </style>
 </head>
 <body>
@@ -379,6 +408,16 @@
   <!-- Search -->
   <div class="search-wrap search-icon">
     <input class="search-box" type="text" placeholder="Search meetings and memos..." id="search-input" />
+  </div>
+
+  <!-- Upcoming meeting suggestion -->
+  <div class="upcoming" id="upcoming" style="display: none;">
+    <div class="upcoming-icon">📅</div>
+    <div class="upcoming-info">
+      <div class="upcoming-title" id="upcoming-title"></div>
+      <div class="upcoming-time" id="upcoming-time"></div>
+    </div>
+    <button class="btn btn-primary btn-sm" id="btn-record-upcoming">Record</button>
   </div>
 
   <!-- Meeting list -->
@@ -837,11 +876,44 @@
       });
     }
 
+    // ── Upcoming meetings ──
+    async function checkUpcoming() {
+      if (isRecording) return;
+      try {
+        const events = await invoke('cmd_upcoming_meetings');
+        const upcoming = document.getElementById('upcoming');
+        if (events && events.length > 0) {
+          const next = events[0];
+          document.getElementById('upcoming-title').textContent = next.title;
+          const mins = next.minutes_until;
+          document.getElementById('upcoming-time').textContent =
+            mins <= 0 ? 'Starting now' :
+            mins === 1 ? 'In 1 minute' :
+            mins < 60 ? `In ${mins} minutes` :
+            `In ${Math.floor(mins / 60)}h ${mins % 60}m`;
+          upcoming.style.display = 'flex';
+
+          document.getElementById('btn-record-upcoming').onclick = async () => {
+            try {
+              await invoke('cmd_start_recording');
+            } catch (e) { console.error('Record:', e); }
+          };
+        } else {
+          upcoming.style.display = 'none';
+        }
+      } catch (e) {
+        // Calendar access may not be granted — silently hide
+        document.getElementById('upcoming').style.display = 'none';
+      }
+    }
+
     // ── Init ──
     checkSetup();
     checkStatus();
     loadMeetings();
+    checkUpcoming();
     setInterval(() => { if (!pollInterval) checkStatus(); }, 2000);
+    setInterval(checkUpcoming, 60000); // Check calendar every minute
   </script>
 </body>
 </html>

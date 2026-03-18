@@ -254,6 +254,12 @@ pub fn cmd_open_file(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub fn cmd_upcoming_meetings() -> serde_json::Value {
+    let events = minutes_core::calendar::upcoming_events(120); // 2 hour lookahead
+    serde_json::to_value(&events).unwrap_or(serde_json::json!([]))
+}
+
+#[tauri::command]
 pub fn cmd_needs_setup() -> serde_json::Value {
     let config = Config::load();
     let model_name = &config.transcription.model;

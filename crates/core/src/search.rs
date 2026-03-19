@@ -1,7 +1,7 @@
 use crate::config::Config;
 use crate::error::SearchError;
 use crate::markdown::{extract_field, split_frontmatter, Frontmatter, IntentKind};
-use chrono::{DateTime, Local};
+use chrono::Local;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;

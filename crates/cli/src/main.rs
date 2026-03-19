@@ -1,6 +1,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use minutes_core::{CaptureMode, Config, ContentType};
+use serde::Serialize;
 use std::path::{Path, PathBuf};
 
 /// minutes — conversation memory for AI assistants.
@@ -149,6 +150,17 @@ enum Commands {
         list: bool,
     },
 
+    /// Inspect or register the meetings directory as a QMD collection
+    Qmd {
+        /// Action: status or register
+        #[arg(value_parser = ["status", "register"])]
+        action: String,
+
+        /// Collection name to use in QMD
+        #[arg(long, default_value = "minutes")]
+        collection: String,
+    },
+
     /// List available audio input devices
     Devices,
 
@@ -242,6 +254,7 @@ fn main() -> Result<()> {
         Commands::Watch { dir } => cmd_watch(dir.as_deref(), &config),
         Commands::Devices => cmd_devices(),
         Commands::Setup { model, list } => cmd_setup(&model, list),
+        Commands::Qmd { action, collection } => cmd_qmd(&action, &collection, &config),
         Commands::Service { action } => cmd_service(&action),
         Commands::Logs { errors, lines } => cmd_logs(errors, lines),
     }
@@ -802,6 +815,224 @@ fn cmd_setup(model: &str, list: bool) -> Result<()> {
     Ok(())
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct QmdCollectionInfo {
+    name: String,
+    path: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct QmdStatusReport {
+    qmd_available: bool,
+    output_dir: PathBuf,
+    target_collection: String,
+    registered: bool,
+    matching_collections: Vec<QmdCollectionInfo>,
+    config_engine: String,
+    config_collection: Option<String>,
+}
+
+fn parse_qmd_collection_names(stdout: &str) -> Vec<String> {
+    let mut collections = Vec::new();
+
+    for line in stdout.lines() {
+        if let Some((name, _)) = line.split_once(" (qmd://") {
+            collections.push(name.trim().to_string());
+        }
+    }
+
+    collections
+}
+
+fn parse_qmd_collection_path(stdout: &str) -> Option<PathBuf> {
+    stdout
+        .lines()
+        .find_map(|line| line.trim_start().strip_prefix("Path:"))
+        .map(|path| PathBuf::from(path.trim()))
+}
+
+fn normalize_path_for_compare(path: &Path) -> PathBuf {
+    if path.exists() {
+        std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    } else {
+        path.to_path_buf()
+    }
+}
+
+fn content_type_path_matches(output_dir: &Path, candidate: &Path) -> bool {
+    normalize_path_for_compare(output_dir) == normalize_path_for_compare(candidate)
+}
+
+fn qmd_status_report(collection: &str, config: &Config) -> Result<QmdStatusReport> {
+    let output_dir = normalize_path_for_compare(&config.output_dir);
+    let output = match std::process::Command::new("qmd")
+        .args(["collection", "list"])
+        .output()
+    {
+        Ok(output) => output,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(QmdStatusReport {
+                qmd_available: false,
+                output_dir,
+                target_collection: collection.to_string(),
+                registered: false,
+                matching_collections: Vec::new(),
+                config_engine: config.search.engine.clone(),
+                config_collection: config.search.qmd_collection.clone(),
+            });
+        }
+        Err(error) => return Err(error.into()),
+    };
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        anyhow::bail!("{}", if !stderr.is_empty() { stderr } else { stdout });
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut matching_collections = Vec::new();
+    for candidate_name in parse_qmd_collection_names(&stdout) {
+        let show_output = std::process::Command::new("qmd")
+            .args(["collection", "show", &candidate_name])
+            .output()?;
+        if !show_output.status.success() {
+            continue;
+        }
+
+        let show_stdout = String::from_utf8_lossy(&show_output.stdout);
+        if let Some(path) = parse_qmd_collection_path(&show_stdout) {
+            let candidate = QmdCollectionInfo {
+                name: candidate_name,
+                path,
+            };
+            if content_type_path_matches(&output_dir, &candidate.path) {
+                matching_collections.push(candidate);
+            }
+        }
+    }
+    let registered = matching_collections
+        .iter()
+        .any(|candidate| candidate.name == collection);
+
+    Ok(QmdStatusReport {
+        qmd_available: true,
+        output_dir,
+        target_collection: collection.to_string(),
+        registered,
+        matching_collections,
+        config_engine: config.search.engine.clone(),
+        config_collection: config.search.qmd_collection.clone(),
+    })
+}
+
+fn cmd_qmd(action: &str, collection: &str, config: &Config) -> Result<()> {
+    match action {
+        "status" => {
+            let report = qmd_status_report(collection, config)?;
+
+            if !report.qmd_available {
+                eprintln!("QMD is not installed or not on PATH.");
+                eprintln!(
+                    "Install qmd, then run: minutes qmd register --collection {}",
+                    collection
+                );
+            } else if report.registered {
+                eprintln!(
+                    "QMD collection '{}' already indexes {}",
+                    collection,
+                    report.output_dir.display()
+                );
+            } else if report.matching_collections.is_empty() {
+                eprintln!("{} is not indexed in QMD yet.", report.output_dir.display());
+                eprintln!("Run: minutes qmd register --collection {}", collection);
+            } else {
+                eprintln!(
+                    "{} is already indexed in QMD under: {}",
+                    report.output_dir.display(),
+                    report
+                        .matching_collections
+                        .iter()
+                        .map(|candidate| candidate.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+                eprintln!("Run: minutes qmd register --collection {}", collection);
+            }
+
+            if report.config_engine != "qmd"
+                || report.config_collection.as_deref() != Some(collection)
+            {
+                eprintln!("\nTo opt into QMD search, add to ~/.config/minutes/config.toml:");
+                eprintln!("  [search]");
+                eprintln!("  engine = \"qmd\"");
+                eprintln!("  qmd_collection = \"{}\"", collection);
+            }
+
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        }
+        "register" => {
+            config.ensure_dirs()?;
+            let initial = qmd_status_report(collection, config)?;
+
+            if !initial.qmd_available {
+                anyhow::bail!(
+                    "qmd is not installed or not on PATH. Install qmd, then rerun this command."
+                );
+            }
+
+            if initial.registered {
+                eprintln!(
+                    "QMD collection '{}' already indexes {}",
+                    collection,
+                    initial.output_dir.display()
+                );
+                println!("{}", serde_json::to_string_pretty(&initial)?);
+                return Ok(());
+            }
+
+            let output = std::process::Command::new("qmd")
+                .arg("collection")
+                .arg("add")
+                .arg(&config.output_dir)
+                .arg("--name")
+                .arg(collection)
+                .output()?;
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                anyhow::bail!("{}", if !stderr.is_empty() { stderr } else { stdout });
+            }
+
+            let report = qmd_status_report(collection, config)?;
+            eprintln!(
+                "Registered {} as QMD collection '{}'.",
+                report.output_dir.display(),
+                collection
+            );
+            eprintln!(
+                "Run `qmd update -c {}` or `qmd embed` as needed to refresh the collection.",
+                collection
+            );
+
+            if report.config_engine != "qmd"
+                || report.config_collection.as_deref() != Some(collection)
+            {
+                eprintln!("\nTo opt into QMD search, add to ~/.config/minutes/config.toml:");
+                eprintln!("  [search]");
+                eprintln!("  engine = \"qmd\"");
+                eprintln!("  qmd_collection = \"{}\"", collection);
+            }
+
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        }
+        _ => anyhow::bail!("Unknown qmd action: {}. Use status or register.", action),
+    }
+
+    Ok(())
+}
+
 fn cmd_service(action: &str) -> Result<()> {
     let plist_name = "dev.getminutes.watcher";
     let plist_dest = dirs::home_dir()
@@ -947,6 +1178,44 @@ fn cmd_logs(errors: bool, lines: usize) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_qmd_collection_names_extracts_collection_headers() {
+        let output = r#"Collections (2):
+
+minutes (qmd://minutes/)
+  Pattern:  **/*.md
+  Files:    12
+  Updated:  1h ago
+
+life (qmd://life/)
+  Pattern:  **/*.md
+  Files:    100
+  Updated:  2d ago
+"#;
+
+        let collections = parse_qmd_collection_names(output);
+        assert_eq!(collections, vec!["minutes".to_string(), "life".to_string()]);
+    }
+
+    #[test]
+    fn parse_qmd_collection_path_reads_show_output() {
+        let output = r#"Collection: minutes
+  Path:     /Users/silverbook/meetings
+  Pattern:  **/*.md
+  Include:  yes (default)
+"#;
+
+        assert_eq!(
+            parse_qmd_collection_path(output),
+            Some(PathBuf::from("/Users/silverbook/meetings"))
+        );
+    }
 }
 
 // Frontmatter parsing is in minutes_core::markdown::{split_frontmatter, extract_field}

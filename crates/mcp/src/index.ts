@@ -565,6 +565,118 @@ server.tool(
   }
 );
 
+// ── Tool: qmd_collection_status ─────────────────────────────
+
+server.tool(
+  "qmd_collection_status",
+  "Check whether the Minutes output directory is already registered as a QMD collection.",
+  {
+    collection: z
+      .string()
+      .optional()
+      .default("minutes")
+      .describe("QMD collection name to check"),
+  },
+  async ({ collection }) => {
+    const { stdout, stderr } = await runMinutes([
+      "qmd",
+      "status",
+      "--collection",
+      collection,
+    ]);
+    const report = parseJsonOutput(stdout);
+
+    if (!report || typeof report !== "object") {
+      return { content: [{ type: "text" as const, text: stderr || stdout }] };
+    }
+
+    if (!report.qmd_available) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `QMD is not installed or not on PATH. Install qmd, then run register_qmd_collection for "${collection}".`,
+          },
+        ],
+      };
+    }
+
+    if (report.registered) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `QMD collection "${collection}" already indexes ${report.output_dir}.`,
+          },
+        ],
+      };
+    }
+
+    const aliases = Array.isArray(report.matching_collections)
+      ? report.matching_collections.map((candidate: any) => candidate.name)
+      : [];
+
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text:
+            aliases.length > 0
+              ? `${report.output_dir} is already indexed in QMD under: ${aliases.join(", ")}.`
+              : `${report.output_dir} is not indexed in QMD yet.`,
+        },
+      ],
+    };
+  }
+);
+
+// ── Tool: register_qmd_collection ───────────────────────────
+
+server.tool(
+  "register_qmd_collection",
+  "Register the Minutes output directory as a QMD collection.",
+  {
+    collection: z
+      .string()
+      .optional()
+      .default("minutes")
+      .describe("QMD collection name to register"),
+  },
+  async ({ collection }) => {
+    const { stdout, stderr } = await runMinutes([
+      "qmd",
+      "register",
+      "--collection",
+      collection,
+    ]);
+    const report = parseJsonOutput(stdout);
+
+    if (!report || typeof report !== "object") {
+      return { content: [{ type: "text" as const, text: stderr || stdout }] };
+    }
+
+    if (!report.registered) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: stderr || stdout || `Failed to register QMD collection "${collection}".`,
+          },
+        ],
+      };
+    }
+
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: `Registered ${report.output_dir} as QMD collection "${collection}".`,
+        },
+      ],
+    };
+  }
+);
+
 // ── Start server ────────────────────────────────────────────
 
 async function main() {

@@ -2373,6 +2373,7 @@ dependencies = [
  "hound",
  "libc",
  "minutes-core",
+ "serde",
  "serde_json",
  "tracing",
  "tracing-subscriber",

@@ -1,4 +1,4 @@
-use minutes_core::{Config, ContentType};
+use minutes_core::{CaptureMode, Config, ContentType};
 use std::cmp::Reverse;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -131,12 +131,36 @@ pub fn wait_for_recording_shutdown_forever() {
     let _ = wait_for_path_removal(&pid_path, None);
 }
 
-fn stage_label(stage: minutes_core::pipeline::PipelineStage) -> &'static str {
-    match stage {
-        minutes_core::pipeline::PipelineStage::Transcribing => "Transcribing audio",
-        minutes_core::pipeline::PipelineStage::Diarizing => "Separating speakers",
-        minutes_core::pipeline::PipelineStage::Summarizing => "Generating summary",
-        minutes_core::pipeline::PipelineStage::Saving => "Saving meeting",
+fn parse_capture_mode(mode: Option<&str>) -> Result<CaptureMode, String> {
+    match mode.unwrap_or("meeting") {
+        "meeting" => Ok(CaptureMode::Meeting),
+        "quick-thought" => Ok(CaptureMode::QuickThought),
+        other => Err(format!(
+            "Unsupported recording mode: {}. Use 'meeting' or 'quick-thought'.",
+            other
+        )),
+    }
+}
+
+fn stage_label(stage: minutes_core::pipeline::PipelineStage, mode: CaptureMode) -> &'static str {
+    match (stage, mode) {
+        (minutes_core::pipeline::PipelineStage::Transcribing, CaptureMode::Meeting) => {
+            "Transcribing meeting"
+        }
+        (minutes_core::pipeline::PipelineStage::Transcribing, CaptureMode::QuickThought) => {
+            "Transcribing quick thought"
+        }
+        (minutes_core::pipeline::PipelineStage::Diarizing, _) => "Separating speakers",
+        (minutes_core::pipeline::PipelineStage::Summarizing, CaptureMode::Meeting) => {
+            "Generating meeting summary"
+        }
+        (minutes_core::pipeline::PipelineStage::Summarizing, CaptureMode::QuickThought) => {
+            "Generating memo summary"
+        }
+        (minutes_core::pipeline::PipelineStage::Saving, CaptureMode::Meeting) => "Saving meeting",
+        (minutes_core::pipeline::PipelineStage::Saving, CaptureMode::QuickThought) => {
+            "Saving quick thought"
+        }
     }
 }
 
@@ -471,6 +495,7 @@ pub fn start_recording(
     processing_stage: Arc<Mutex<Option<String>>>,
     latest_output: Arc<Mutex<Option<OutputNotice>>>,
     completion_notifications_enabled: Arc<AtomicBool>,
+    mode: CaptureMode,
 ) {
     recording.store(true, Ordering::Relaxed);
     stop_flag.store(false, Ordering::Relaxed);
@@ -487,36 +512,38 @@ pub fn start_recording(
         recording.store(false, Ordering::Relaxed);
         return;
     }
+    minutes_core::pid::write_recording_metadata(mode).ok();
 
     minutes_core::notes::save_recording_start().ok();
-    eprintln!("Recording started...");
+    eprintln!("{} started...", mode.noun());
 
     let mut remove_current_wav = false;
     match minutes_core::capture::record_to_wav(&wav_path, stop_flag, &config) {
         Ok(()) => {
             recording.store(false, Ordering::Relaxed);
             processing.store(true, Ordering::Relaxed);
-            let title = chrono::Local::now()
-                .format("Recording %Y-%m-%d %H:%M")
-                .to_string();
             match minutes_core::pipeline::process_with_progress(
                 &wav_path,
-                ContentType::Meeting,
-                Some(&title),
+                mode.content_type(),
+                None,
                 &config,
                 |stage| {
-                    let label = stage_label(stage);
+                    let label = stage_label(stage, mode);
                     set_processing_stage(&processing_stage, Some(label));
-                    let _ = minutes_core::pid::set_processing_status(Some(label));
+                    let _ = minutes_core::pid::set_processing_status(Some(label), Some(mode));
                 },
             ) {
                 Ok(result) => {
                     remove_current_wav = true;
+                    let detail = match mode {
+                        CaptureMode::Meeting => "Saved meeting markdown",
+                        CaptureMode::QuickThought => "Saved quick thought memo",
+                    };
                     let notice = OutputNotice {
                         kind: "saved".into(),
                         title: result.title.clone(),
                         path: result.path.display().to_string(),
-                        detail: "Saved meeting markdown".into(),
+                        detail: detail.into(),
                     };
                     set_latest_output(&latest_output, Some(notice.clone()));
                     maybe_show_completion_notification(
@@ -525,19 +552,27 @@ pub fn start_recording(
                         &notice,
                     );
                     eprintln!(
-                        "Saved: {} ({} words)",
+                        "Saved {}: {} ({} words)",
+                        mode.noun(),
                         result.path.display(),
                         result.word_count
                     );
                 }
                 Err(e) => {
                     if let Some(saved) = preserve_failed_capture(&wav_path, &config) {
+                        let detail = match mode {
+                            CaptureMode::Meeting => {
+                                "Processing failed, but the raw meeting capture was preserved."
+                            }
+                            CaptureMode::QuickThought => {
+                                "Processing failed, but the raw quick thought capture was preserved."
+                            }
+                        };
                         let notice = OutputNotice {
                             kind: "preserved-capture".into(),
                             title: "Raw capture preserved".into(),
                             path: saved.display().to_string(),
-                            detail: "Processing failed, but the raw audio capture was preserved."
-                                .into(),
+                            detail: detail.into(),
                         };
                         set_latest_output(&latest_output, Some(notice.clone()));
                         maybe_show_completion_notification(
@@ -563,13 +598,19 @@ pub fn start_recording(
         Err(e) => {
             recording.store(false, Ordering::Relaxed);
             if let Some(saved) = preserve_failed_capture(&wav_path, &config) {
+                let detail = match mode {
+                    CaptureMode::Meeting => {
+                        "Recording failed before processing, but the captured meeting audio was preserved."
+                    }
+                    CaptureMode::QuickThought => {
+                        "Recording failed before processing, but the quick thought audio was preserved."
+                    }
+                };
                 let notice = OutputNotice {
                     kind: "preserved-capture".into(),
                     title: "Partial capture preserved".into(),
                     path: saved.display().to_string(),
-                    detail:
-                        "Recording failed before processing, but the captured audio was preserved."
-                            .into(),
+                    detail: detail.into(),
                 };
                 set_latest_output(&latest_output, Some(notice.clone()));
                 maybe_show_completion_notification(
@@ -596,6 +637,7 @@ pub fn start_recording(
     processing.store(false, Ordering::Relaxed);
     set_processing_stage(&processing_stage, None);
     minutes_core::pid::clear_processing_status().ok();
+    minutes_core::pid::clear_recording_metadata().ok();
     recording.store(false, Ordering::Relaxed);
 }
 
@@ -603,10 +645,12 @@ pub fn start_recording(
 pub fn cmd_start_recording(
     app: tauri::AppHandle,
     state: tauri::State<AppState>,
+    mode: Option<String>,
 ) -> Result<(), String> {
     if recording_active(&state.recording) {
         return Err("Already recording".into());
     }
+    let capture_mode = parse_capture_mode(mode.as_deref())?;
     state.recording.store(true, Ordering::Relaxed);
     let rec = state.recording.clone();
     let stop = state.stop_flag.clone();
@@ -625,6 +669,7 @@ pub fn cmd_start_recording(
             processing_stage,
             latest_output,
             completion_notifications_enabled,
+            capture_mode,
         );
         crate::update_tray_state(&app_done, false);
     });
@@ -693,6 +738,7 @@ pub fn cmd_status(state: tauri::State<AppState>) -> serde_json::Value {
     serde_json::json!({
         "recording": recording || (status.recording && !processing),
         "processing": processing,
+        "recordingMode": status.recording_mode,
         "processingStage": processing_stage,
         "latestOutput": latest_output,
         "pid": status.pid,
@@ -970,11 +1016,17 @@ mod tests {
     #[test]
     fn stage_label_maps_pipeline_stage_to_user_facing_copy() {
         assert_eq!(
-            stage_label(minutes_core::pipeline::PipelineStage::Transcribing),
-            "Transcribing audio"
+            stage_label(
+                minutes_core::pipeline::PipelineStage::Transcribing,
+                CaptureMode::QuickThought
+            ),
+            "Transcribing quick thought"
         );
         assert_eq!(
-            stage_label(minutes_core::pipeline::PipelineStage::Saving),
+            stage_label(
+                minutes_core::pipeline::PipelineStage::Saving,
+                CaptureMode::Meeting
+            ),
             "Saving meeting"
         );
     }

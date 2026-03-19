@@ -24,6 +24,11 @@ pub fn pid_path() -> PathBuf {
     Config::minutes_dir().join("recording.pid")
 }
 
+/// Path to the recording metadata JSON (`~/.minutes/recording-meta.json`).
+pub fn recording_meta_path() -> PathBuf {
+    Config::minutes_dir().join("recording-meta.json")
+}
+
 /// Path to the in-progress audio capture file (`~/.minutes/current.wav`).
 pub fn current_wav_path() -> PathBuf {
     Config::minutes_dir().join("current.wav")
@@ -39,14 +44,76 @@ pub fn processing_status_path() -> PathBuf {
     Config::minutes_dir().join("processing-status.json")
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CaptureMode {
+    Meeting,
+    QuickThought,
+}
+
+impl CaptureMode {
+    pub fn content_type(self) -> crate::markdown::ContentType {
+        match self {
+            Self::Meeting => crate::markdown::ContentType::Meeting,
+            Self::QuickThought => crate::markdown::ContentType::Memo,
+        }
+    }
+
+    pub fn noun(self) -> &'static str {
+        match self {
+            Self::Meeting => "meeting",
+            Self::QuickThought => "quick thought",
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct RecordingMetadata {
+    pub mode: CaptureMode,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ProcessingStatus {
     pub processing: bool,
     pub stage: Option<String>,
     pub owner_pid: u32,
+    pub mode: Option<CaptureMode>,
 }
 
-pub fn set_processing_status(stage: Option<&str>) -> std::io::Result<()> {
+pub fn write_recording_metadata(mode: CaptureMode) -> std::io::Result<()> {
+    let path = recording_meta_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let metadata = RecordingMetadata { mode };
+    let json = serde_json::to_string(&metadata)?;
+    fs::write(path, json)
+}
+
+pub fn read_recording_metadata() -> Option<RecordingMetadata> {
+    let path = recording_meta_path();
+    if !path.exists() {
+        return None;
+    }
+
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<RecordingMetadata>(&s).ok())
+}
+
+pub fn clear_recording_metadata() -> std::io::Result<()> {
+    let path = recording_meta_path();
+    if path.exists() {
+        fs::remove_file(path)?;
+    }
+    Ok(())
+}
+
+pub fn set_processing_status(
+    stage: Option<&str>,
+    mode: Option<CaptureMode>,
+) -> std::io::Result<()> {
     let path = processing_status_path();
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -56,6 +123,7 @@ pub fn set_processing_status(stage: Option<&str>) -> std::io::Result<()> {
         processing: true,
         stage: stage.map(String::from),
         owner_pid: std::process::id(),
+        mode,
     };
     let json = serde_json::to_string(&status)?;
     fs::write(path, json)
@@ -76,6 +144,7 @@ pub fn read_processing_status() -> ProcessingStatus {
             processing: false,
             stage: None,
             owner_pid: 0,
+            mode: None,
         };
     }
 
@@ -94,6 +163,7 @@ pub fn read_processing_status() -> ProcessingStatus {
             processing: false,
             stage: None,
             owner_pid: 0,
+            mode: None,
         })
 }
 
@@ -187,6 +257,7 @@ fn cleanup_stale() -> Result<(), PidError> {
     if path.exists() {
         fs::remove_file(&path)?;
     }
+    clear_recording_metadata().ok();
     // Don't delete current.wav — it may contain recoverable audio
     Ok(())
 }
@@ -203,6 +274,7 @@ pub struct RecordingStatus {
     pub recording: bool,
     pub processing: bool,
     pub processing_stage: Option<String>,
+    pub recording_mode: Option<CaptureMode>,
     pub pid: Option<u32>,
     pub duration_secs: Option<f64>,
     pub wav_path: Option<String>,
@@ -229,6 +301,7 @@ pub fn status() -> RecordingStatus {
                 recording: true,
                 processing: false,
                 processing_stage: None,
+                recording_mode: read_recording_metadata().map(|meta| meta.mode),
                 pid: Some(pid),
                 // Duration is approximate: time since WAV was last modified.
                 // The record process writes continuously, so this is close.
@@ -240,6 +313,7 @@ pub fn status() -> RecordingStatus {
             recording: false,
             processing: processing.processing,
             processing_stage: processing.stage,
+            recording_mode: processing.mode,
             pid: None,
             duration_secs: None,
             wav_path: None,
@@ -263,11 +337,20 @@ mod tests {
 
     #[test]
     fn processing_status_round_trip() {
-        set_processing_status(Some("Transcribing audio")).unwrap();
+        set_processing_status(Some("Transcribing audio"), Some(CaptureMode::QuickThought)).unwrap();
         let status = read_processing_status();
         assert!(status.processing);
         assert_eq!(status.stage.as_deref(), Some("Transcribing audio"));
         assert_eq!(status.owner_pid, std::process::id());
+        assert_eq!(status.mode, Some(CaptureMode::QuickThought));
         clear_processing_status().unwrap();
+    }
+
+    #[test]
+    fn recording_metadata_round_trip() {
+        write_recording_metadata(CaptureMode::QuickThought).unwrap();
+        let metadata = read_recording_metadata().unwrap();
+        assert_eq!(metadata.mode, CaptureMode::QuickThought);
+        clear_recording_metadata().unwrap();
     }
 }

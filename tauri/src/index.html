@@ -1029,6 +1029,16 @@
       border-top: 1px solid var(--border);
     }
 
+    .footer-actions {
+      display: grid;
+      grid-template-columns: 1.35fr 1fr;
+      gap: 10px;
+    }
+
+    .footer-actions .btn {
+      width: 100%;
+    }
+
     /* ── Buttons ── */
     .btn {
       padding: 7px 16px;
@@ -1121,7 +1131,7 @@
     <div class="top-row">
       <div class="recording-indicator">
         <span class="recording-dot"></span>
-        Recording
+        <span id="recording-label">Recording</span>
       </div>
       <span class="recording-time" id="recording-time">0:00</span>
     </div>
@@ -1137,7 +1147,7 @@
     <div class="processing-row">
       <div class="processing-spinner" aria-hidden="true"></div>
       <div class="processing-copy">
-        <div class="processing-title">Processing recording</div>
+        <div class="processing-title" id="processing-title">Processing recording</div>
         <div class="processing-stage" id="processing-stage">Preparing transcript...</div>
       </div>
     </div>
@@ -1193,7 +1203,10 @@
 
   <!-- Footer -->
   <div class="footer" id="footer">
-    <button class="btn btn-primary" id="btn-record">Start Recording</button>
+    <div class="footer-actions">
+      <button class="btn btn-primary" id="btn-record">Start Recording</button>
+      <button class="btn btn-secondary" id="btn-quick-thought">Quick Thought</button>
+    </div>
   </div>
 
   <!-- In-app meeting detail view -->
@@ -1394,7 +1407,9 @@
 
     const statusPill = document.getElementById('status-pill');
     const recordingBar = document.getElementById('recording-bar');
+    const recordingLabel = document.getElementById('recording-label');
     const processingBar = document.getElementById('processing-bar');
+    const processingTitle = document.getElementById('processing-title');
     const recordingTime = document.getElementById('recording-time');
     const processingStage = document.getElementById('processing-stage');
     const outputNotice = document.getElementById('output-notice');
@@ -1422,6 +1437,7 @@
     const recoveryButton = document.getElementById('btn-recovery');
     const recoveryCount = document.getElementById('recovery-count');
     const recoveryScroll = document.getElementById('recovery-scroll');
+    const quickThoughtButton = document.getElementById('btn-quick-thought');
 
     let isRecording = false;
     let isProcessing = false;
@@ -1482,19 +1498,29 @@
       } catch (_) {}
     }
 
+    function currentModeLabel(mode) {
+      return mode === 'quick-thought' ? 'Quick Thought' : 'Recording';
+    }
+
+    function currentProcessingTitle(mode) {
+      return mode === 'quick-thought' ? 'Processing quick thought' : 'Processing recording';
+    }
+
     // ── Status polling ──
     async function checkStatus() {
       try {
         const status = await invoke('cmd_status');
         const wasRecording = isRecording;
         const wasProcessing = isProcessing;
+        const mode = status.recordingMode || 'meeting';
         isRecording = status.recording;
         isProcessing = !!status.processing;
         updateOutputNotice(status.latestOutput);
 
         if (isRecording) {
           statusPill.className = 'status-pill recording';
-          statusPill.textContent = 'recording';
+          statusPill.textContent = mode === 'quick-thought' ? 'quick thought' : 'recording';
+          recordingLabel.textContent = currentModeLabel(mode);
           recordingBar.classList.add('active');
           processingBar.classList.remove('active');
           footer.style.display = 'none';
@@ -1509,6 +1535,7 @@
         } else if (isProcessing) {
           statusPill.className = 'status-pill processing';
           statusPill.textContent = 'processing';
+          processingTitle.textContent = currentProcessingTitle(mode);
           recordingBar.classList.remove('active');
           processingBar.classList.add('active');
           footer.style.display = 'none';
@@ -1523,6 +1550,8 @@
         } else {
           statusPill.className = 'status-pill';
           statusPill.textContent = 'idle';
+          recordingLabel.textContent = 'Recording';
+          processingTitle.textContent = 'Processing recording';
           recordingBar.classList.remove('active');
           processingBar.classList.remove('active');
           quickNote.classList.remove('active');
@@ -1758,6 +1787,14 @@
         await invoke('cmd_start_recording');
       } catch (e) {
         console.error('Record:', e);
+      }
+    });
+
+    quickThoughtButton.addEventListener('click', async () => {
+      try {
+        await invoke('cmd_start_recording', { mode: 'quick-thought' });
+      } catch (e) {
+        console.error('Quick thought:', e);
       }
     });
 

@@ -99,6 +99,14 @@ fn main() {
                 None::<&str>,
             )?;
             let record_item_ref = record_item.clone();
+            let quick_thought_item = MenuItem::with_id(
+                app,
+                "quick-thought",
+                "Quick Thought",
+                !initial_recording,
+                None::<&str>,
+            )?;
+            let quick_thought_item_ref = quick_thought_item.clone();
             let stop_item = MenuItem::with_id(
                 app,
                 "stop",
@@ -120,6 +128,7 @@ fn main() {
                     &open_item,
                     &sep0,
                     &record_item,
+                    &quick_thought_item,
                     &stop_item,
                     &sep,
                     &note_item,
@@ -141,6 +150,7 @@ fn main() {
                     let recording = recording_clone.clone();
                     let stop = stop_clone.clone();
                     let rec_item = record_item_ref.clone();
+                    let quick_item = quick_thought_item_ref.clone();
                     let stp_item = stop_item_ref.clone();
                     match event.id.as_ref() {
                         "open" => {
@@ -152,6 +162,7 @@ fn main() {
                             }
                             rec_item.set_text("Recording...").ok();
                             rec_item.set_enabled(false).ok();
+                            quick_item.set_enabled(false).ok();
                             stp_item.set_enabled(true).ok();
                             update_tray_state(app, true);
                             let app_handle = app.clone();
@@ -174,9 +185,51 @@ fn main() {
                                     processing_stage,
                                     latest_output,
                                     completion_notifications_enabled,
+                                    minutes_core::CaptureMode::Meeting,
                                 );
                                 ri.set_text("Start Recording").ok();
                                 ri.set_enabled(true).ok();
+                                quick_item.set_enabled(true).ok();
+                                si.set_enabled(false).ok();
+                                update_tray_state(&app_done, false);
+                            });
+                        }
+                        "quick-thought" => {
+                            if commands::recording_active(&recording) {
+                                return;
+                            }
+                            rec_item.set_enabled(false).ok();
+                            quick_item.set_text("Quick Thought…").ok();
+                            quick_item.set_enabled(false).ok();
+                            stp_item.set_enabled(true).ok();
+                            update_tray_state(app, true);
+                            let app_handle = app.clone();
+                            let app_done = app.clone();
+                            let rec = recording.clone();
+                            let sf = stop.clone();
+                            let processing = processing.clone();
+                            let processing_stage = processing_stage.clone();
+                            let latest_output = latest_output.clone();
+                            let completion_notifications_enabled =
+                                completion_notifications_enabled.clone();
+                            let ri = rec_item.clone();
+                            let qi = quick_item.clone();
+                            let si = stp_item.clone();
+                            std::thread::spawn(move || {
+                                commands::start_recording(
+                                    app_handle,
+                                    rec,
+                                    sf,
+                                    processing,
+                                    processing_stage,
+                                    latest_output,
+                                    completion_notifications_enabled,
+                                    minutes_core::CaptureMode::QuickThought,
+                                );
+                                ri.set_text("Start Recording").ok();
+                                ri.set_enabled(true).ok();
+                                qi.set_text("Quick Thought").ok();
+                                qi.set_enabled(true).ok();
                                 si.set_enabled(false).ok();
                                 update_tray_state(&app_done, false);
                             });
@@ -185,9 +238,12 @@ fn main() {
                             if commands::request_stop(&recording, &stop).is_ok() {
                                 rec_item.set_text("Stopping...").ok();
                                 rec_item.set_enabled(false).ok();
+                                quick_item.set_text("Quick Thought").ok();
+                                quick_item.set_enabled(false).ok();
                                 stp_item.set_enabled(false).ok();
                                 let app_done = app.clone();
                                 let ri = rec_item.clone();
+                                let qi = quick_item.clone();
                                 let si = stp_item.clone();
                                 std::thread::spawn(move || {
                                     if commands::wait_for_recording_shutdown(
@@ -195,6 +251,8 @@ fn main() {
                                     ) {
                                         ri.set_text("Start Recording").ok();
                                         ri.set_enabled(true).ok();
+                                        qi.set_text("Quick Thought").ok();
+                                        qi.set_enabled(true).ok();
                                         si.set_enabled(false).ok();
                                         update_tray_state(&app_done, false);
                                     }

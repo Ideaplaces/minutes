@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use minutes_core::{Config, ContentType};
+use minutes_core::{CaptureMode, Config, ContentType};
 use std::path::{Path, PathBuf};
 
 /// minutes — conversation memory for AI assistants.
@@ -27,6 +27,10 @@ enum Commands {
         /// Pre-meeting context (what this meeting is about)
         #[arg(short, long)]
         context: Option<String>,
+
+        /// Live capture mode: meeting or quick-thought
+        #[arg(long, default_value = "meeting", value_parser = ["meeting", "quick-thought"])]
+        mode: String,
     },
 
     /// Add a note to the current recording
@@ -154,7 +158,11 @@ fn main() -> Result<()> {
     minutes_core::logging::rotate_logs().ok();
 
     match cli.command {
-        Commands::Record { title, context } => cmd_record(title, context, &config),
+        Commands::Record {
+            title,
+            context,
+            mode,
+        } => cmd_record(title, context, &mode, &config),
         Commands::Note { text, meeting } => cmd_note(&text, meeting.as_deref(), &config),
         Commands::Stop => cmd_stop(&config),
         Commands::Status => cmd_status(),
@@ -211,12 +219,55 @@ fn cmd_note(text: &str, meeting: Option<&Path>, config: &Config) -> Result<()> {
     Ok(())
 }
 
-fn cmd_record(title: Option<String>, context: Option<String>, config: &Config) -> Result<()> {
+fn capture_mode_from_str(mode: &str) -> Result<CaptureMode> {
+    match mode {
+        "meeting" => Ok(CaptureMode::Meeting),
+        "quick-thought" => Ok(CaptureMode::QuickThought),
+        other => anyhow::bail!(
+            "unknown recording mode: {}. Use 'meeting' or 'quick-thought'.",
+            other
+        ),
+    }
+}
+
+fn live_stage_label(
+    stage: minutes_core::pipeline::PipelineStage,
+    mode: CaptureMode,
+) -> &'static str {
+    match (stage, mode) {
+        (minutes_core::pipeline::PipelineStage::Transcribing, CaptureMode::Meeting) => {
+            "Transcribing meeting"
+        }
+        (minutes_core::pipeline::PipelineStage::Transcribing, CaptureMode::QuickThought) => {
+            "Transcribing quick thought"
+        }
+        (minutes_core::pipeline::PipelineStage::Diarizing, _) => "Separating speakers",
+        (minutes_core::pipeline::PipelineStage::Summarizing, CaptureMode::Meeting) => {
+            "Generating meeting summary"
+        }
+        (minutes_core::pipeline::PipelineStage::Summarizing, CaptureMode::QuickThought) => {
+            "Generating memo summary"
+        }
+        (minutes_core::pipeline::PipelineStage::Saving, CaptureMode::Meeting) => "Saving meeting",
+        (minutes_core::pipeline::PipelineStage::Saving, CaptureMode::QuickThought) => {
+            "Saving quick thought"
+        }
+    }
+}
+
+fn cmd_record(
+    title: Option<String>,
+    context: Option<String>,
+    mode: &str,
+    config: &Config,
+) -> Result<()> {
     // Ensure directories exist
     config.ensure_dirs()?;
+    let capture_mode = capture_mode_from_str(mode)?;
 
     // Check if already recording
     minutes_core::pid::create().map_err(|e| anyhow::anyhow!("{}", e))?;
+    minutes_core::pid::write_recording_metadata(capture_mode).ok();
 
     // Save recording start time (for timestamping notes)
     minutes_core::notes::save_recording_start()?;
@@ -227,8 +278,16 @@ fn cmd_record(title: Option<String>, context: Option<String>, config: &Config) -
         eprintln!("Context saved: {}", ctx);
     }
 
-    eprintln!("Recording... (press Ctrl-C or run `minutes stop` to finish)");
-    eprintln!("  Tip: add notes with `minutes note \"your note\"` in another terminal");
+    match capture_mode {
+        CaptureMode::Meeting => {
+            eprintln!("Recording meeting... (press Ctrl-C or run `minutes stop` to finish)");
+            eprintln!("  Tip: add notes with `minutes note \"your note\"` in another terminal");
+        }
+        CaptureMode::QuickThought => {
+            eprintln!("Recording quick thought... (press Ctrl-C or run `minutes stop` to finish)");
+            eprintln!("  Tip: speak one idea clearly — it will save as a normal memo artifact");
+        }
+    }
 
     // Set up stop flag for signal handler
     let stop_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -244,26 +303,22 @@ fn cmd_record(title: Option<String>, context: Option<String>, config: &Config) -
         .map_err(|e| anyhow::anyhow!("{}", e))?;
 
     // Run pipeline on the captured audio
-    let content_type = ContentType::Meeting;
+    let content_type = capture_mode.content_type();
     let result = minutes_core::pipeline::process_with_progress(
         &wav_path,
         content_type,
         title.as_deref(),
         config,
         |stage| {
-            let label = match stage {
-                minutes_core::pipeline::PipelineStage::Transcribing => "Transcribing audio",
-                minutes_core::pipeline::PipelineStage::Diarizing => "Separating speakers",
-                minutes_core::pipeline::PipelineStage::Summarizing => "Generating summary",
-                minutes_core::pipeline::PipelineStage::Saving => "Saving meeting",
-            };
-            let _ = minutes_core::pid::set_processing_status(Some(label));
+            let label = live_stage_label(stage, capture_mode);
+            let _ = minutes_core::pid::set_processing_status(Some(label), Some(capture_mode));
         },
     );
 
     if let Err(err) = result {
         minutes_core::pid::remove().ok();
         minutes_core::pid::clear_processing_status().ok();
+        minutes_core::pid::clear_recording_metadata().ok();
         minutes_core::notes::cleanup();
         return Err(err.into());
     }
@@ -282,6 +337,7 @@ fn cmd_record(title: Option<String>, context: Option<String>, config: &Config) -
     // Clean up
     minutes_core::pid::remove().ok();
     minutes_core::pid::clear_processing_status().ok();
+    minutes_core::pid::clear_recording_metadata().ok();
     minutes_core::notes::cleanup(); // Remove notes + context + recording-start files
     if wav_path.exists() {
         std::fs::remove_file(&wav_path).ok();
@@ -297,6 +353,9 @@ fn cmd_record(title: Option<String>, context: Option<String>, config: &Config) -
 fn cmd_stop(_config: &Config) -> Result<()> {
     match minutes_core::pid::check_recording() {
         Ok(Some(pid)) => {
+            let capture_mode = minutes_core::pid::read_recording_metadata()
+                .map(|meta| meta.mode)
+                .unwrap_or(CaptureMode::Meeting);
             eprintln!("Stopping recording (PID {})...", pid);
 
             // Send SIGTERM to the recording process
@@ -311,7 +370,7 @@ fn cmd_stop(_config: &Config) -> Result<()> {
             let start = std::time::Instant::now();
             let pid_path = minutes_core::pid::pid_path();
 
-            eprint!("Transcribing");
+            eprint!("Processing {}", capture_mode.noun());
             while pid_path.exists() && start.elapsed() < timeout {
                 std::thread::sleep(std::time::Duration::from_secs(1));
                 eprint!(".");

@@ -150,12 +150,17 @@ const server = new McpServer({
 // ── Tool: start_recording ───────────────────────────────────
 
 server.tool(
-  "start_recording",
+ "start_recording",
   "Start recording audio from the default input device. The recording runs until stop_recording is called.",
   {
     title: z.string().optional().describe("Optional title for this recording"),
+    mode: z
+      .enum(["meeting", "quick-thought"])
+      .optional()
+      .default("meeting")
+      .describe("Live capture mode"),
   },
-  async ({ title }) => {
+  async ({ title, mode }) => {
     const { stdout: statusOut } = await runMinutes(["status"]);
     const status = parseJsonOutput(statusOut);
     if (status.recording) {
@@ -171,7 +176,7 @@ server.tool(
 
     // Spawn detached — recording is a foreground process that blocks,
     // so we spawn it and let it run independently
-    const args = ["record"];
+    const args = ["record", "--mode", mode];
     if (title) args.push("--title", title);
 
     const child = spawn(MINUTES_BIN, args, {
@@ -192,7 +197,7 @@ server.tool(
         {
           type: "text" as const,
           text: result.recording
-            ? `Recording started (PID: ${result.pid}). Say "stop recording" when done.`
+            ? `${result.recording_mode === "quick-thought" ? "Quick thought" : "Recording"} started (PID: ${result.pid}). Say "stop recording" when done.`
             : "Recording failed to start. Check `minutes logs` for details.",
         },
       ],
@@ -233,10 +238,13 @@ server.tool(
   async () => {
     const { stdout } = await runMinutes(["status"]);
     const status = parseJsonOutput(stdout);
+    const modeLabel = status.recording_mode === "quick-thought" ? "Quick thought" : "Recording";
+    const processingLabel =
+      status.recording_mode === "quick-thought" ? "Quick thought processing" : "Processing";
     const text = status.recording
-      ? `Recording in progress (PID: ${status.pid})`
+      ? `${modeLabel} in progress (PID: ${status.pid})`
       : status.processing
-        ? `Processing in progress${status.processing_stage ? `: ${status.processing_stage}` : "."}`
+        ? `${processingLabel}${status.processing_stage ? `: ${status.processing_stage}` : "."}`
         : "No recording in progress.";
     return { content: [{ type: "text" as const, text }] };
   }

@@ -17,4 +17,5 @@ pub mod watch;
 pub use config::Config;
 pub use error::{MinutesError, Result};
 pub use markdown::{ContentType, WriteResult};
+pub use pid::CaptureMode;
 pub use pipeline::process;

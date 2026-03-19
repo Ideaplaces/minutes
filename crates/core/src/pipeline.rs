@@ -119,7 +119,8 @@ where
     };
 
     // Step 2: Diarize (optional — depends on config.diarization.engine)
-    let transcript = if config.diarization.engine != "none" {
+    let transcript = if config.diarization.engine != "none" && content_type == ContentType::Meeting
+    {
         on_progress(PipelineStage::Diarizing);
         tracing::info!(step = "diarize", "running speaker diarization");
         if let Some(result) = diarize::diarize(audio_path, config) {

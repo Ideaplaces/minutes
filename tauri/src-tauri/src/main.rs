@@ -241,6 +241,7 @@ fn main() {
             commands::cmd_start_recording,
             commands::cmd_stop_recording,
             commands::cmd_open_file,
+            commands::cmd_get_meeting_detail,
             commands::cmd_needs_setup,
             commands::cmd_download_model,
             commands::cmd_upcoming_meetings,

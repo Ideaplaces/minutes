@@ -10,6 +10,26 @@ pub struct AppState {
     pub processing_stage: Arc<Mutex<Option<String>>>,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct MeetingSection {
+    pub heading: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct MeetingDetail {
+    pub path: String,
+    pub title: String,
+    pub date: String,
+    pub duration: String,
+    pub content_type: String,
+    pub status: Option<String>,
+    pub context: Option<String>,
+    pub attendees: Vec<String>,
+    pub calendar_event: Option<String>,
+    pub sections: Vec<MeetingSection>,
+}
+
 fn preserve_failed_capture(wav_path: &std::path::Path, config: &Config) -> Option<PathBuf> {
     let metadata = wav_path.metadata().ok()?;
     if metadata.len() == 0 {
@@ -94,6 +114,36 @@ fn set_processing_stage(stage: &Arc<Mutex<Option<String>>>, value: Option<&str>)
     if let Ok(mut current) = stage.lock() {
         *current = value.map(String::from);
     }
+}
+
+fn parse_sections(body: &str) -> Vec<MeetingSection> {
+    let mut sections = Vec::new();
+    let mut current_heading: Option<String> = None;
+    let mut current_lines: Vec<String> = Vec::new();
+
+    for line in body.lines() {
+        if let Some(heading) = line.strip_prefix("## ") {
+            if let Some(existing_heading) = current_heading.take() {
+                sections.push(MeetingSection {
+                    heading: existing_heading,
+                    content: current_lines.join("\n").trim().to_string(),
+                });
+            }
+            current_heading = Some(heading.trim().to_string());
+            current_lines.clear();
+        } else if current_heading.is_some() {
+            current_lines.push(line.to_string());
+        }
+    }
+
+    if let Some(existing_heading) = current_heading.take() {
+        sections.push(MeetingSection {
+            heading: existing_heading,
+            content: current_lines.join("\n").trim().to_string(),
+        });
+    }
+
+    sections
 }
 
 /// Start recording in a background thread.
@@ -310,6 +360,47 @@ pub fn cmd_open_file(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub fn cmd_get_meeting_detail(path: String) -> Result<MeetingDetail, String> {
+    let config = Config::load();
+    let meeting_path = std::path::PathBuf::from(&path);
+    minutes_core::notes::validate_meeting_path(&meeting_path, &config.output_dir)?;
+
+    let content = std::fs::read_to_string(&meeting_path).map_err(|e| e.to_string())?;
+    let (frontmatter_str, body) = minutes_core::markdown::split_frontmatter(&content);
+    let frontmatter: minutes_core::markdown::Frontmatter =
+        serde_yaml::from_str(&format!("---\n{}\n---", frontmatter_str))
+            .map_err(|e| e.to_string())?;
+
+    let content_type = match frontmatter.r#type {
+        ContentType::Meeting => "meeting",
+        ContentType::Memo => "memo",
+    }
+    .to_string();
+
+    let status = frontmatter.status.map(|status| {
+        match status {
+            minutes_core::markdown::OutputStatus::Complete => "complete",
+            minutes_core::markdown::OutputStatus::NoSpeech => "no-speech",
+            minutes_core::markdown::OutputStatus::TranscriptOnly => "transcript-only",
+        }
+        .to_string()
+    });
+
+    Ok(MeetingDetail {
+        path,
+        title: frontmatter.title,
+        date: frontmatter.date.to_rfc3339(),
+        duration: frontmatter.duration,
+        content_type,
+        status,
+        context: frontmatter.context,
+        attendees: frontmatter.attendees,
+        calendar_event: frontmatter.calendar_event,
+        sections: parse_sections(body),
+    })
+}
+
+#[tauri::command]
 pub fn cmd_upcoming_meetings() -> serde_json::Value {
     let events = minutes_core::calendar::upcoming_events(120); // 2 hour lookahead
     serde_json::to_value(&events).unwrap_or(serde_json::json!([]))
@@ -437,5 +528,17 @@ mod tests {
             stage_label(minutes_core::pipeline::PipelineStage::Saving),
             "Saving meeting"
         );
+    }
+
+    #[test]
+    fn parse_sections_preserves_top_level_order() {
+        let body = "## Summary\n\nHello\n\n## Notes\n\n- One\n\n## Transcript\n\n[0:00] Hi\n";
+        let sections = parse_sections(body);
+
+        assert_eq!(sections.len(), 3);
+        assert_eq!(sections[0].heading, "Summary");
+        assert_eq!(sections[1].heading, "Notes");
+        assert_eq!(sections[2].heading, "Transcript");
+        assert!(sections[2].content.contains("[0:00] Hi"));
     }
 }

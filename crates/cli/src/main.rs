@@ -69,6 +69,14 @@ enum Commands {
         /// Return structured intent records instead of prose snippets
         #[arg(long)]
         intents_only: bool,
+
+        /// Filter structured intents by kind
+        #[arg(long, value_parser = ["action-item", "decision", "open-question", "commitment"])]
+        intent_kind: Option<String>,
+
+        /// Filter structured intents by owner / person
+        #[arg(long)]
+        owner: Option<String>,
     },
 
     /// Show open action items across all meetings
@@ -176,7 +184,18 @@ fn main() -> Result<()> {
             since,
             limit,
             intents_only,
-        } => cmd_search(&query, content_type, since, limit, intents_only, &config),
+            intent_kind,
+            owner,
+        } => cmd_search(
+            &query,
+            content_type,
+            since,
+            limit,
+            intents_only,
+            intent_kind,
+            owner,
+            &config,
+        ),
         Commands::Actions { assignee } => cmd_actions(assignee.as_deref(), &config),
         Commands::List {
             limit,
@@ -419,12 +438,16 @@ fn cmd_search(
     since: Option<String>,
     limit: usize,
     intents_only: bool,
+    intent_kind: Option<String>,
+    owner: Option<String>,
     config: &Config,
 ) -> Result<()> {
     let filters = minutes_core::search::SearchFilters {
         content_type,
         since,
         attendee: None,
+        intent_kind: intent_kind.as_deref().map(parse_intent_kind).transpose()?,
+        owner,
     };
 
     if intents_only {
@@ -507,7 +530,20 @@ fn cmd_actions(assignee: Option<&str>, config: &Config) -> Result<()> {
 
 fn cmd_list(limit: usize, content_type: Option<String>, config: &Config) -> Result<()> {
     // List delegates to search with an empty query — DRY, no duplicated file walking
-    cmd_search("", content_type, None, limit, false, config)
+    cmd_search("", content_type, None, limit, false, None, None, config)
+}
+
+fn parse_intent_kind(kind: &str) -> Result<minutes_core::markdown::IntentKind> {
+    match kind {
+        "action-item" => Ok(minutes_core::markdown::IntentKind::ActionItem),
+        "decision" => Ok(minutes_core::markdown::IntentKind::Decision),
+        "open-question" => Ok(minutes_core::markdown::IntentKind::OpenQuestion),
+        "commitment" => Ok(minutes_core::markdown::IntentKind::Commitment),
+        other => anyhow::bail!(
+            "unknown intent kind: {}. Use action-item, decision, open-question, or commitment.",
+            other
+        ),
+    }
 }
 
 fn cmd_process(

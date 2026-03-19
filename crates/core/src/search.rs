@@ -41,6 +41,8 @@ pub struct SearchFilters {
     pub content_type: Option<String>,
     pub since: Option<String>,
     pub attendee: Option<String>,
+    pub intent_kind: Option<IntentKind>,
+    pub owner: Option<String>,
 }
 
 /// Search all markdown files in the meetings directory.
@@ -201,6 +203,23 @@ fn process_intent_file(
 
     let mut results = Vec::new();
     for intent in frontmatter.intents {
+        if let Some(kind) = filters.intent_kind {
+            if intent.kind != kind {
+                continue;
+            }
+        }
+        if let Some(ref owner) = filters.owner {
+            let owner_lower = owner.to_lowercase();
+            let owner_match = intent
+                .who
+                .as_ref()
+                .map(|who| who.to_lowercase().contains(&owner_lower))
+                .unwrap_or(false);
+            if !owner_match {
+                continue;
+            }
+        }
+
         let haystack = format!(
             "{} {} {} {} {}",
             frontmatter.title,
@@ -382,6 +401,8 @@ mod tests {
             content_type: None,
             since: None,
             attendee: None,
+            intent_kind: None,
+            owner: None,
         };
 
         let results = search("pricing", &config, &filters).unwrap();
@@ -406,6 +427,8 @@ mod tests {
             content_type: None,
             since: None,
             attendee: None,
+            intent_kind: None,
+            owner: None,
         };
 
         let results = search("nonexistent", &config, &filters).unwrap();
@@ -429,6 +452,8 @@ mod tests {
             content_type: None,
             since: None,
             attendee: None,
+            intent_kind: None,
+            owner: None,
         };
 
         let results = search("pricing", &config, &filters).unwrap();
@@ -446,6 +471,8 @@ mod tests {
             content_type: None,
             since: None,
             attendee: None,
+            intent_kind: None,
+            owner: None,
         };
 
         let results = search("anything", &config, &filters).unwrap();
@@ -485,14 +512,13 @@ mod tests {
             content_type: None,
             since: None,
             attendee: None,
+            intent_kind: None,
+            owner: None,
         };
 
-        let results = process_intent_file(
-            &dir.path().join("2026-03-17-test.md"),
-            "pricing",
-            &filters,
-        )
-        .unwrap();
+        let results =
+            process_intent_file(&dir.path().join("2026-03-17-test.md"), "pricing", &filters)
+                .unwrap();
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].title, "Pricing Review");
         assert!(results
@@ -501,5 +527,29 @@ mod tests {
         assert!(results
             .iter()
             .any(|item| item.kind == IntentKind::Commitment));
+    }
+
+    #[test]
+    fn search_intents_filters_by_kind_and_owner() {
+        let dir = TempDir::new().unwrap();
+        create_test_file(
+            dir.path(),
+            "2026-03-17-test.md",
+            "---\ntitle: Pricing Review\ntype: meeting\ndate: 2026-03-17T12:00:00-07:00\nduration: 42m\nstatus: complete\ntags: []\nattendees: []\npeople: []\naction_items: []\ndecisions: []\nintents:\n  - kind: action-item\n    what: Send pricing doc\n    who: mat\n    status: open\n    by_date: Friday\n  - kind: commitment\n    what: Share revised pricing model\n    who: sarah\n    status: open\n    by_date: Tuesday\n---\n\n## Transcript\n\nWe discussed pricing.\n",
+        );
+
+        let filters = SearchFilters {
+            content_type: None,
+            since: None,
+            attendee: None,
+            intent_kind: Some(IntentKind::Commitment),
+            owner: Some("sarah".into()),
+        };
+
+        let results =
+            process_intent_file(&dir.path().join("2026-03-17-test.md"), "", &filters).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].kind, IntentKind::Commitment);
+        assert_eq!(results[0].who.as_deref(), Some("sarah"));
     }
 }

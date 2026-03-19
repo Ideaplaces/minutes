@@ -290,16 +290,23 @@ server.tool(
     type: z.enum(["meeting", "memo"]).optional().describe("Filter by type"),
     since: z.string().optional().describe("Only results after this date (ISO)"),
     limit: z.number().optional().default(10).describe("Maximum results"),
+    intent_kind: z
+      .enum(["action-item", "decision", "open-question", "commitment"])
+      .optional()
+      .describe("Filter structured intents by kind"),
+    owner: z.string().optional().describe("Filter structured intents by owner / person"),
     intents_only: z
       .boolean()
       .optional()
       .default(false)
       .describe("Return structured intent records instead of transcript snippets"),
   },
-  async ({ query, type: contentType, since, limit, intents_only }) => {
+  async ({ query, type: contentType, since, limit, intent_kind, owner, intents_only }) => {
     const args = ["search", query, "--limit", String(limit)];
     if (contentType) args.push("-t", contentType);
     if (since) args.push("--since", since);
+    if (intent_kind) args.push("--intent-kind", intent_kind);
+    if (owner) args.push("--owner", owner);
     if (intents_only) args.push("--intents-only");
 
     const { stdout, stderr } = await runMinutes(args);

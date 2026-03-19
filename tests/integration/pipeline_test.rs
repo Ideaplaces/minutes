@@ -161,6 +161,8 @@ fn search_filters_by_content_type() {
         content_type: Some("memo".into()),
         since: None,
         attendee: None,
+        intent_kind: None,
+        owner: None,
     };
 
     // Search for content that exists in the output (varies by whisper vs placeholder)

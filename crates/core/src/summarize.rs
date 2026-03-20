@@ -240,6 +240,52 @@ fn parse_summary_response(response: &str) -> Summary {
 //
 // The agent command is configurable via [summarization] agent_command.
 
+/// Resolve a command name to a full path, searching common install locations.
+/// GUI apps (like Tauri) run with a minimal PATH that doesn't include
+/// ~/.cargo/bin, ~/.local/bin, or /opt/homebrew/bin.
+fn resolve_agent_path(cmd: &str) -> String {
+    use std::path::PathBuf;
+
+    // Already an absolute path
+    if cmd.starts_with('/') {
+        return cmd.to_string();
+    }
+
+    // Check if it's findable in the current PATH
+    if let Ok(output) = std::process::Command::new("which")
+        .arg(cmd)
+        .output()
+    {
+        if output.status.success() {
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path.is_empty() {
+                return path;
+            }
+        }
+    }
+
+    // Search common install directories
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
+    let search_dirs = [
+        home.join(".cargo/bin"),
+        home.join(".local/bin"),
+        home.join(".npm-global/bin"),
+        PathBuf::from("/opt/homebrew/bin"),
+        PathBuf::from("/usr/local/bin"),
+        PathBuf::from("/usr/bin"),
+    ];
+
+    for dir in &search_dirs {
+        let candidate = dir.join(cmd);
+        if candidate.exists() {
+            return candidate.to_string_lossy().to_string();
+        }
+    }
+
+    // Fall back to bare command name (will likely fail in GUI context)
+    cmd.to_string()
+}
+
 fn summarize_with_agent(
     transcript: &str,
     config: &Config,
@@ -251,6 +297,10 @@ fn summarize_with_agent(
     } else {
         config.summarization.agent_command.clone()
     };
+
+    // Resolve full path — GUI apps have a minimal PATH and won't find
+    // binaries in ~/.cargo/bin, ~/.local/bin, /opt/homebrew/bin, etc.
+    let agent_cmd = resolve_agent_path(&agent_cmd);
 
     // Truncate at a safe UTF-8 char boundary to avoid panics
     let max_transcript = 100_000;

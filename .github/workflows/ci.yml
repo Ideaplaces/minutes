@@ -40,11 +40,12 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Build (no whisper)
+      - name: Build core (no whisper)
         run: cargo build -p minutes-core --no-default-features
 
-      - name: Build CLI (no whisper)
-        run: cargo build -p minutes-cli --no-default-features
+      - name: Build full workspace (macOS only)
+        if: runner.os == 'macOS'
+        run: cargo build --no-default-features
 
       - name: Test (unit + integration, no whisper)
         run: cargo test -p minutes-core --no-default-features

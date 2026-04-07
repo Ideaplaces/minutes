@@ -3260,6 +3260,7 @@
           isLiveTranscript = false;
           callBanner.classList.remove('active');
           if (activeCallSession) activeCallSession.dismissed = true;
+          syncMeetingRecordButtons();
           footer.style.display = 'none';
           if (status.elapsed) recordingTime.textContent = status.elapsed;
           updateViz(status.audioLevel || 0);
@@ -3280,6 +3281,7 @@
           liveBar.classList.remove('active'); // T4
           isLiveTranscript = false;
           callBanner.classList.remove('active');
+          syncMeetingRecordButtons();
           footer.style.display = '';
           processingStage.textContent = status.processingStage || 'Preparing transcript...';
 
@@ -3347,6 +3349,7 @@
           if (activeCallSession && !activeCallSession.dismissed) {
             callBanner.classList.add('active');
           }
+          syncMeetingRecordButtons();
 
           // Clear processing elapsed timer
           if (processingTimerInterval) { clearInterval(processingTimerInterval); processingTimerInterval = null; }
@@ -3691,9 +3694,31 @@
     });
 
     // ── Recording controls ──
+    async function startMeetingRecording(options = {}) {
+      const payload = {};
+      if (options.mode) payload.mode = options.mode;
+      if (options.title) payload.title = options.title;
+      if (options.language) payload.language = options.language;
+
+      const preferCallIntent =
+        options.mode !== 'quick-thought' &&
+        !options.intent &&
+        activeCallSession &&
+        !activeCallSession.dismissed &&
+        callBanner.classList.contains('active');
+
+      if (options.intent) {
+        payload.intent = options.intent;
+      } else if (preferCallIntent) {
+        payload.intent = 'call';
+      }
+
+      await invoke('cmd_start_recording', payload);
+    }
+
     document.getElementById('btn-record').addEventListener('click', async () => {
       try {
-        await invoke('cmd_start_recording');
+        await startMeetingRecording();
       } catch (e) {
         console.error('Record:', e);
       }
@@ -4467,15 +4492,18 @@
 
           document.getElementById('btn-record-upcoming').onclick = async () => {
             try {
-              await invoke('cmd_start_recording');
+              await startMeetingRecording();
             } catch (e) { console.error('Record:', e); }
           };
+          syncMeetingRecordButtons();
         } else {
           upcoming.style.display = 'none';
+          syncMeetingRecordButtons();
         }
       } catch (e) {
         // Calendar access may not be granted — silently hide
         document.getElementById('upcoming').style.display = 'none';
+        syncMeetingRecordButtons();
       }
     }
 
@@ -5909,6 +5937,19 @@
     const callHealthAudio = document.getElementById('call-health-audio');
     let activeCallSession = null;
 
+    function syncMeetingRecordButtons() {
+      const preferCallIntent =
+        activeCallSession &&
+        !activeCallSession.dismissed &&
+        callBanner.classList.contains('active');
+      document.getElementById('btn-record').textContent = preferCallIntent
+        ? 'Start Call Recording'
+        : 'Start Recording';
+      document.getElementById('btn-record-upcoming').textContent = preferCallIntent
+        ? 'Record Call'
+        : 'Record';
+    }
+
     function setCallHealthChip(node, text, live) {
       if (!node) return;
       node.textContent = text;
@@ -5927,6 +5968,7 @@
       setCallHealthChip(callHealthMic, 'Mic waiting', false);
       setCallHealthChip(callHealthAudio, 'Call audio waiting', false);
       callBanner.classList.add('active');
+      syncMeetingRecordButtons();
 
       // Only steal focus on first detection, not periodic reminders
       if (!is_reminder) {
@@ -5937,7 +5979,7 @@
 
     document.getElementById('btn-record-call').addEventListener('click', async () => {
       try {
-        await invoke('cmd_start_recording', { intent: 'call' });
+        await startMeetingRecording({ intent: 'call' });
       } catch (e) {
         console.error('Call recording:', e);
       }
@@ -5946,6 +5988,7 @@
     document.getElementById('btn-dismiss-call').addEventListener('click', () => {
       if (activeCallSession) activeCallSession.dismissed = true;
       callBanner.classList.remove('active');
+      syncMeetingRecordButtons();
     });
 
     currentWindow.listen('dictation-hotkey:status', (event) => {

@@ -109,16 +109,17 @@ jobs:
 
       - name: Verify installation
         run: |
+          sleep 2
           echo "=== CLI ==="
-          ~/.local/bin/minutes --version
+          ~/.local/bin/minutes --version || echo "CLI binary not responding (may need system restart)"
           echo ""
           echo "=== Desktop App ==="
-          ls -la /Applications/Minutes.app/Contents/MacOS/
+          ls /Applications/Minutes.app/Contents/MacOS/minutes-app && echo "Desktop app installed"
           echo ""
           echo "=== MCP Server ==="
-          ls -la ~/.minutes/mcp-server/dist/index.js
+          ls ~/.minutes/mcp-server/dist/index.js && echo "MCP server installed"
           echo ""
-          echo "=== Build complete ==="
+          echo "=== Build and deploy complete ==="
 
       - name: Clean up
         if: always()

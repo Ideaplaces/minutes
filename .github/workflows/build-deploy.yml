@@ -50,7 +50,15 @@ jobs:
 
       - name: Build Tauri desktop app
         working-directory: ${{ env.BUILD_DIR }}/minutes
-        run: cargo tauri build --bundles app
+        run: |
+          # Build succeeds but exits 1 due to missing updater signing key.
+          # The .app bundle is created before the signing error, so we verify it exists.
+          cargo tauri build --bundles app || true
+          if [ ! -d "target/release/bundle/macos/Minutes.app" ]; then
+            echo "ERROR: Minutes.app was not created"
+            exit 1
+          fi
+          echo "Minutes.app built successfully"
 
       - name: Embed calendar helper in app bundle
         working-directory: ${{ env.BUILD_DIR }}/minutes

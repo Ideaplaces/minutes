@@ -71,8 +71,9 @@ jobs:
         working-directory: ${{ env.BUILD_DIR }}/minutes
         run: |
           mkdir -p ~/.local/bin
-          codesign -s - -f target/release/minutes 2>/dev/null || true
           cp -f target/release/minutes ~/.local/bin/minutes
+          codesign -s - -f ~/.local/bin/minutes 2>/dev/null || true
+          xattr -cr ~/.local/bin/minutes 2>/dev/null || true
           echo "CLI version: $(~/.local/bin/minutes --version 2>&1)"
 
       - name: Install desktop app

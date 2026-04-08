@@ -1,0 +1,119 @@
+name: Build and Deploy (Self-Hosted)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: build-deploy
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build and Install
+    runs-on: [self-hosted, minutes]
+    timeout-minutes: 60
+
+    steps:
+      - name: Set up environment
+        run: |
+          BUILD_DIR="$HOME/minutes-build"
+          rm -rf "$BUILD_DIR"
+          mkdir -p "$BUILD_DIR"
+          echo "BUILD_DIR=$BUILD_DIR" >> $GITHUB_ENV
+
+      - name: Clone repository (fresh)
+        run: |
+          git clone --depth 1 git@github.com:Ideaplaces/minutes.git "$BUILD_DIR/minutes"
+          echo "Minutes: $(cd "$BUILD_DIR/minutes" && git log -1 --format='%h %s')"
+
+      - name: Set build flags
+        run: |
+          echo "CXXFLAGS=-I$(xcrun --show-sdk-path)/usr/include/c++/v1" >> $GITHUB_ENV
+          echo "MACOSX_DEPLOYMENT_TARGET=11.0" >> $GITHUB_ENV
+
+      - name: Build CLI (release)
+        working-directory: ${{ env.BUILD_DIR }}/minutes
+        run: cargo build --release -p minutes-cli
+
+      - name: Build calendar helper
+        working-directory: ${{ env.BUILD_DIR }}/minutes
+        run: |
+          swiftc -O \
+            -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist \
+            -Xlinker scripts/calendar-helper-Info.plist \
+            scripts/calendar-events.swift -o target/release/calendar-events
+
+      - name: Build Tauri desktop app
+        working-directory: ${{ env.BUILD_DIR }}/minutes
+        run: cargo tauri build --bundles app
+
+      - name: Embed calendar helper in app bundle
+        working-directory: ${{ env.BUILD_DIR }}/minutes
+        run: |
+          APP_RESOURCES="target/release/bundle/macos/Minutes.app/Contents/Resources"
+          mkdir -p "$APP_RESOURCES"
+          cp -f target/release/calendar-events "$APP_RESOURCES/calendar-events"
+
+      - name: Install CLI
+        working-directory: ${{ env.BUILD_DIR }}/minutes
+        run: |
+          mkdir -p ~/.local/bin
+          codesign -s - -f target/release/minutes 2>/dev/null || true
+          cp -f target/release/minutes ~/.local/bin/minutes
+          echo "CLI version: $(~/.local/bin/minutes --version 2>&1)"
+
+      - name: Install desktop app
+        working-directory: ${{ env.BUILD_DIR }}/minutes
+        run: |
+          pkill -f "Minutes.app" || true
+          sleep 2
+          cp -rf target/release/bundle/macos/Minutes.app /Applications/Minutes.app
+          echo "Desktop app installed to /Applications/Minutes.app"
+
+      - name: Build MCP server
+        working-directory: ${{ env.BUILD_DIR }}/minutes/crates/sdk
+        run: npm install && npm run build
+
+      - name: Build MCP server
+        working-directory: ${{ env.BUILD_DIR }}/minutes/crates/mcp
+        run: npm install && npm run build
+
+      - name: Install MCP server
+        run: |
+          MCP_DIR="$HOME/.minutes/mcp-server"
+          rm -rf "$MCP_DIR"
+          mkdir -p "$MCP_DIR"
+          cp -r "$BUILD_DIR/minutes/crates/mcp/dist" "$MCP_DIR/"
+          cp -r "$BUILD_DIR/minutes/crates/mcp/dist-ui" "$MCP_DIR/" 2>/dev/null || true
+          cp "$BUILD_DIR/minutes/crates/mcp/package.json" "$MCP_DIR/"
+          cd "$MCP_DIR" && npm install --omit=dev 2>&1
+          echo "MCP server installed to $MCP_DIR"
+
+      - name: Launch desktop app
+        run: |
+          open /Applications/Minutes.app
+          echo "Minutes desktop app launched"
+
+      - name: Verify installation
+        run: |
+          echo "=== CLI ==="
+          ~/.local/bin/minutes --version
+          echo ""
+          echo "=== Desktop App ==="
+          ls -la /Applications/Minutes.app/Contents/MacOS/
+          echo ""
+          echo "=== MCP Server ==="
+          ls -la ~/.minutes/mcp-server/dist/index.js
+          echo ""
+          echo "=== Build complete ==="
+
+      - name: Clean up
+        if: always()
+        run: |
+          rm -rf "$BUILD_DIR"
+          echo "Cleaned up build directory"
